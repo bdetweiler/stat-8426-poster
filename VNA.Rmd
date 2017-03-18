@@ -1,0 +1,208 @@
+---
+title: "VNA.Rmd"
+author: "Brian Detweiler"
+date: "March 16, 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, message=F, warning=F,include=FALSE}
+options("scipen" = 100, digits = 19, warning=FALSE, message=FALSE)
+library(ggplot2)
+library(data.table)
+library(bit64)
+library(plyr)
+library(dplyr)
+#library(Stat5303libs)
+#library(cfcdae)
+library(lme4)
+#setwd("~/Box Sync/vna-project/R")
+#setwd("~/Box Sync/research/VNA/vna-project/R")
+#dir("../data")
+```
+read in data
+```{r, echo=F} 
+VstData <- fread("../data/HW_VstDataExport.csv")
+HISData <- fread("../data/HW_HISDataExport.csv")
+EmpData <- fread("../data/TineEmpTraining.csv")
+PatData <- fread("../data/HW_Pat.csv")
+EmpAgeData <- fread("../data/HW_Emp.csv")
+tineScanDat <- fread("../data/TineScansImport.csv")
+```
+convert dates
+```{r,echo=F}
+VstData$ActualDate <- as.Date(as.character(VstData$ActualDate), "%m/%d/%Y")
+VstData$UserDate <- as.Date(as.character(VstData$UserDate), "%m/%d/%Y")
+HISData$SOC <- as.Date(HISData$SOC)
+HISData$DischargeDate <- as.Date(HISData$DischargeDate)
+PatData$SOC <- as.Date(as.character(PatData$SOC), "%m/%d/%Y")
+PatData$DischargeDate <- as.Date(as.character(PatData$DischargeDate), "%m/%d/%Y")
+tineScanDat$TineDate <- as.Date(as.character(tineScanDat$TineDate), "%m/%d/%Y")
+```
+tine video data
+```{r,echo=F}
+tineScanDat$TineTime <- sapply(
+  strsplit(tineScanDat$TineTime,":"),
+  function(x) {
+    x <- as.numeric(x)
+    x[1]+x[2]/60
+    })
+y <- merge(EmpData,tineScanDat[,c(1,7)],by="EmpID")
+SumTine <- aggregate(TineTime~EmpID,y,sum)
+EmpData <- merge(EmpData,SumTine,by="EmpID",all = T)
+EmpData[is.na(EmpData)] <- 0
+```
+omitting non-discharged
+```{r,echo=F}
+HISData <- HISData[!is.na(HISData$DischargeDate),]
+PatData <- PatData[!is.na(PatData$DischargeDate),]
+HISData <- subset(HISData, SOC > as.Date("2016-11-30"))
+PatData <- subset(PatData, SOC > as.Date("2016-11-30"))
+```
+merging data
+```{r,echo=F}
+colnames(EmpAgeData)[1] <- 'EmpID'
+colnames(VstData)[2] <- 'EmpID'
+#EmpData <- merge(EmpData,EmpAgeData,by="EmpID",all=T) 
+### Don't have consistant ages for all EmpIDs.
+VstData <- merge(EmpData,VstData,by="EmpID",all=T)
+VstData <- na.omit(VstData)
+VstData$M0100Ans <- as.factor(VstData$M0100Ans)
+levels(VstData$M0100Ans)[1] <- "DIS"
+levels(VstData$M0100Ans)[5] <- "SOC"
+SOCVstData <- subset(VstData, M0100Ans == "SOC")
+DISVstData <- subset(VstData, M0100Ans == "DIS")
+SOCVstData <- subset(SOCVstData, UserDate > as.Date("2016-11-30"))
+DISVstData <- subset(DISVstData, UserDate > as.Date("2016-11-30"))
+colnames(SOCVstData)[7] <- 'SOC'
+colnames(DISVstData)[7] <- 'DischargeDate'
+```
+merging more data
+```{r,echo=F}
+SortedData <- merge(PatData[,c(1:8)],SOCVstData[,c(1:7,15,17:18)],by=c("PatID","SOC"))
+SortedData <- merge(SortedData,DISVstData[,c(1:7,15,17:18)],by=c("PatID","DischargeDate","OasisID"))
+SortedData$OasisID <- as.factor(SortedData$OasisID)
+levels(SortedData$OasisID) <- c("Surgical Wound","Status of Wound","Short of Breath",
+                                "Transferring","Ambulation/Locomotion","Oral Medications",
+                                "Injectable Medications")
+SortedData <- na.omit(SortedData) 
+SortedData <- distinct(SortedData) # This is the big one - just need to add watched data
+```
+building final data set
+```{r,echo=F}
+ModData <- data.frame("Patient" = SortedData$Encounter_RowID.x, 
+                      "Age" = SortedData$Age,
+                      "Gender" = as.factor(SortedData$Gender),
+                      "PreIns" = as.factor(SortedData$PriIns),
+                      "Site" = as.factor(SortedData$Site),
+                      "Stay Length" = as.numeric(SortedData$DischargeDate - SortedData$SOC),
+                      "SOC_EmpID" = SortedData$EmpID.x, 
+                      "SOC_Tine" = as.factor(SortedData$Tine.x),
+                      "SOC_Ans" = SortedData$Ans.x,
+                      "DIS_EmpID" = SortedData$EmpID.y,
+                      "DIS_Tine" = as.factor(SortedData$Tine.y),
+                      "Dsc" = as.factor(SortedData$Dsc.x),
+                      "DIS_Ans" = SortedData$Ans.y,
+                      "OasisID" =  SortedData$OasisID,
+                      "Response" = (SortedData$Ans.x - SortedData$Ans.y),
+                      "Video Time" = (SortedData$TineTime.x + SortedData$TineTime.y)/60)
+ModData$Response[ModData$Response< -3] <- 0 # fix some anomalous outliers 
+ModData$Response[ModData$Response> 5] <- 0 # fix some anomalous outliers
+ModData$SOC_Ans[ModData$SOC_Ans< -3] <- 0 # fix some anomalous outliers 
+ModData$SOC_Ans[ModData$SOC_Ans> 5] <- 0 # fix some anomalous outliers
+ModData$DIS_Ans[ModData$DIS_Ans< -3] <- 0 # fix some anomalous outliers 
+ModData$DIS_Ans[ModData$DIS_Ans> 5] <- 0 # fix some anomalous outliers
+```
+subsetting final data set to fit model
+```{r,echo=F}
+x <- ModData
+x$SOC_EmpID <- NULL
+x$DIS_EmpID <- NULL
+x$Patient <- as.factor(x$Patient)
+x$Patient <- match(x$Patient, levels(x$Patient))
+x$Tine <- as.factor(paste(x$SOC_Tine,x$DIS_Tine))
+x$Tine <- factor(x$Tine, labels = c("CC","CT","TC","TT"))
+```
+```{r,echo=F}
+OverallResponse <- aggregate(Response~Patient,x,sum)
+SOCResponse <- aggregate(SOC_Ans~Patient,x,sum)
+DISResponse <- aggregate(DIS_Ans~Patient,x,sum)
+Response <- merge(SOCResponse,DISResponse,by="Patient")
+Response <- merge(Response,OverallResponse,by="Patient")
+final <- merge(distinct(x[,c(1:7,9:10,14:15)]),Response,by="Patient") 
+### This is the data.frame Dr. Majumder asked for
+```
+PLOTS, baby!
+```{r,echo=F}
+ggplot(final, aes(Video.Time, Response, color=factor(Tine))) + geom_point()
+ggplot(final, aes(Tine, Response)) + geom_boxplot()
+ggplot(final, aes(SOC_Tine, SOC_Ans)) + geom_boxplot()
+ggplot(final, aes(DIS_Tine, DIS_Ans)) + geom_boxplot()
+ggplot(final, aes(Gender, Response))+ geom_boxplot() + facet_grid(~Tine)
+ggplot(final, aes(as.numeric(Stay.Length), Response)) + geom_point() + facet_wrap(~Tine)
+```
+```{r,echo=F}
+out <- lm(Response ~ Tine+Age+Gender+Stay.Length+PreIns+Site+Dsc+Video.Time,final)
+summary(out)
+anova(out)
+qplot(final$Response, predict(out))
+```
+```{r,echo=F}
+ggplot(x, aes(Tine, Response)) + geom_boxplot() + facet_wrap(~OasisID)
+ggplot(x[!x$Response == 0,], aes(Tine, Response)) + geom_boxplot() + facet_wrap(~OasisID)
+```
+Code for multiplots in knitr
+```{r,echo=F}
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  numPlots = length(plots)
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+ if (numPlots==1) {
+    print(plots[[1]])
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+p1 <- ggplot(final, aes(Gender, Age))+ geom_boxplot()
+p2 <- ggplot(final, aes(Gender, as.numeric(Stay.Length)))+ geom_boxplot() + ylab("Days in Care")
+p3 <- ggplot(final, aes(Gender, Response))+ geom_boxplot() 
+p4 <- ggplot(final, aes(as.numeric(Stay.Length),Response))+ geom_point() + xlab("Days in Care")
+multiplot(p1,p2,cols = 2)
+multiplot(p3,p4,cols = 2)
+```
+
+```{r}
+
+soc<-melt(dat[c(8,13)], id=c("SOC_Tine"))
+dis<-melt(dat[c(9,14)], id=c("DIS_Tine"))
+colnames(dis)[1] <- "SOC_Tine"
+tempdat2 <- rbind(soc,dis)
+
+
+tempdat<-melt(myDat[c(8,13,14)], id=c("SOC_Tine"))
+ggplot(tempdat) + geom_boxplot(aes(variable, value)) + facet_grid(~SOC_Tine)
+
+tempdat<-melt(myDat[c(8,9,13,14)], id=c("SOC_Tine","DIS_Tine"))
+ggplot(tempdat) + geom_boxplot(aes(variable, value)) + facet_grid(SOC_Tine~DIS_Tine)
+
+```

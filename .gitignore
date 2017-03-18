@@ -5,3 +5,6 @@
 *.tex
 *.log
 *.swp
+/.RData
+/.Rhistory
+/*.zip

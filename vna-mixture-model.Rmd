@@ -1,0 +1,209 @@
+---
+title: "STAT 8426 Poster"
+author: "Brian Detweiler"
+date: "March 31, 2017"
+header-includes:
+  - \usepackage{color}
+  - \usepackage{xcolor}
+  - \usepackage{soul}
+  - \usepackage{hyperref}
+  - \usepackage[vmargin=1in,hmargin=1in]{geometry}
+  - \usepackage{booktabs}
+  
+output: pdf_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, error=FALSE}
+library(rstan)
+library(rjags)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+source("DBDA2Eprograms/DBDA2E-utilities.R")
+```
+
+```{r}
+vna <- read.csv('sortedData_0315.csv')
+n <- length(vna[,1])
+lambda.1 <- (vna %>% filter(SOC_Tine == 'Control' & DIS_Tine == 'Control') %>% count())[[1]] / n
+lambda.2 <- (vna %>% filter(SOC_Tine == 'Control' & DIS_Tine == 'Trained') %>% count())[[1]] / n
+lambda.3 <- (vna %>% filter(SOC_Tine == 'Trained' & DIS_Tine == 'Control') %>% count())[[1]] / n
+lambda.4 <- (vna %>% filter(SOC_Tine == 'Trained' & DIS_Tine == 'Trained') %>% count())[[1]] / n
+```
+
+
+Let's try the zero-inflated model first:
+
+```{r}
+inits <- function() {
+  lambda1 <- mean(eyesdata$y[1:30]) + rnorm(1, 0, 0.01)
+  theta <-  mean(eyesdata$y[31:48]) - lambda1
+  sigma2 <- var(eyesdata$y[1:30])
+  
+  return(list(lambda = c(lambda1, NA), 
+              theta = theta, 
+              tau = 1/sigma2, 
+              pi = c(30, 48 - 30) / 48))
+}
+
+inits()
+
+fileName <- "Assignment_11.1"
+
+modelString ="
+model {
+  for(i in 1 : N ) {
+    y[i] ~ dnorm(mu[i], tau)
+    mu[i] <- lambda[T[i]]
+    T[i] ~ dcat(pi[])
+  }
+
+  pi[1:2] ~ ddirch(alpha[])
+  theta ~ dnorm(0.0, 1.0E-6)%_%I(0.0, )
+  lambda[1] ~ dnorm(0.0, 1.0E-6)
+  lambda[2] <- lambda[1] + theta
+  tau ~ dgamma(0.001, 0.001)
+  sigma <- 1 / sqrt(tau)
+}
+"
+
+writeLines(modelString, con=fileName)
+
+planes.model.zero.infl = jags.model(file=fileName, 
+                                    data=list(y=planes$y,
+                                              count=length(planes$y),
+                                              x1=planes$x1,
+                                              x2=planes$x2,
+                                              x3=planes$x3),
+                                    n.chains=4)
+        
+update(planes.model.zero.infl, n.iter=50000)
+
+planes.DIC.zero.infl <- dic.samples(model = planes.model.zero.infl, n.iter = 200000, thin = 50)
+planes.DIC.zero.infl
+
+planes.samples.zero.infl <- coda.samples(model = planes.model.zero.infl, 
+                                         variable.names = c("y", "beta1", "beta2", "beta3"), 
+                                         n.iter = 200000, 
+                                         thin = 50)
+
+diagMCMC(planes.samples.zero.infl)
+
+```
+
+Now let's try a non-zero-inflated Poisson regression:
+
+```{r}
+fileName <- "Assignment_11.2"
+
+modelString ="
+model {
+
+  for (j in 1:count) {
+    y[j] ~ dpois(theta[j])
+    theta[j] = exp( eta[j] )
+    eta[j] = beta1 * x1[j] + beta2 * x2[j] + beta3 * x3[j]
+  }
+
+  beta1 ~ dnorm(0, 1.0E-4)
+  beta2 ~ dnorm(0, 1.0E-4)
+  beta3 ~ dnorm(0, 1.0E-4)
+
+  a4.min.min ~ dpois(exp(beta2 * min(x2)  + beta3 * min(x3)))
+  a4.avg.min ~ dpois(exp(beta2 * mean(x2) + beta3 * min(x3)))
+  a4.max.min ~ dpois(exp(beta2 * max(x2)  + beta3 * min(x3)))
+  a4.min.avg ~ dpois(exp(beta2 * min(x2)  + beta3 * mean(x3)))
+  a4.avg.avg ~ dpois(exp(beta2 * mean(x2) + beta3 * mean(x3)))
+  a4.max.avg ~ dpois(exp(beta2 * max(x2)  + beta3 * mean(x3)))
+  a4.min.max ~ dpois(exp(beta2 * min(x2)  + beta3 * max(x3)))
+  a4.avg.max ~ dpois(exp(beta2 * mean(x2) + beta3 * max(x3)))
+  a4.max.max ~ dpois(exp(beta2 * max(x2)  + beta3 * max(x3)))
+
+  a6.min.min ~ dpois(exp(beta1 + beta2 * min(x2)  + beta3 * min(x3)))
+  a6.avg.min ~ dpois(exp(beta1 + beta2 * mean(x2) + beta3 * min(x3)))
+  a6.max.min ~ dpois(exp(beta1 + beta2 * max(x2)  + beta3 * min(x3)))
+  a6.min.avg ~ dpois(exp(beta1 + beta2 * min(x2)  + beta3 * mean(x3)))
+  a6.avg.avg ~ dpois(exp(beta1 + beta2 * mean(x2) + beta3 * mean(x3)))
+  a6.max.avg ~ dpois(exp(beta1 + beta2 * max(x2)  + beta3 * mean(x3)))
+  a6.min.max ~ dpois(exp(beta1 + beta2 * min(x2)  + beta3 * max(x3)))
+  a6.avg.max ~ dpois(exp(beta1 + beta2 * mean(x2) + beta3 * max(x3)))
+  a6.max.max ~ dpois(exp(beta1 + beta2 * max(x2)  + beta3 * max(x3)))
+}
+"
+
+writeLines(modelString, con=fileName)
+
+planes.model.pois = jags.model(file=fileName, 
+                               data=list(y=planes$y,
+                                         count=length(planes$y),
+                                         x1=planes$x1,
+                                         x2=planes$x2,
+                                         x3=planes$x3),
+                             n.chains=4)
+
+update(planes.model.pois, n.iter=50000)
+
+
+planes.DIC.pois <- dic.samples(model = planes.model.pois, n.iter = 200000, thin = 50)
+
+planes.DIC.pois
+
+diffdic(planes.DIC.pois, planes.DIC.zero.infl)
+```
+
+This seems to have a slightly better fit than the zero-inflated Poisson model.
+
+```{r}
+planes.samples.pois <- coda.samples(model = planes.model.pois, 
+                                    variable.names = c("beta1", 
+                                                       "beta2", 
+                                                       "beta3",
+                                                       "a4.min.min",
+                                                       "a4.avg.min",
+                                                       "a4.max.min",
+                                                       "a4.min.avg",
+                                                       "a4.avg.avg",
+                                                       "a4.max.avg",
+                                                       "a4.min.max",
+                                                       "a4.avg.max",
+                                                       "a6.min.min",
+                                                       "a6.avg.min",
+                                                       "a6.max.min",
+                                                       "a6.min.avg",
+                                                       "a6.avg.avg",
+                                                       "a6.max.avg",
+                                                       "a6.min.max",
+                                                       "a6.avg.max",
+                                                       "a6.max.max"), 
+                                    n.iter = 200000, 
+                                    thin = 50)
+
+planes.samples.pois.M <- as.matrix(planes.samples.pois[,"beta1"])
+```
+
+Our 95% prediction intervals for each situation, A4 or A6 aircraft, with minimal, average, or maximal bomb load, and minimal, average, or maximal crew experience.
+```{r}
+summary(planes.samples.pois)
+
+planes.df <- as.data.frame(as.matrix(planes.samples.pois))
+planes.df <- planes.df %>% select(-beta1, -beta2, -beta3)
+
+planes.df.melt <- melt(planes.df)
+
+ggplot(planes.df.melt, aes(x=variable, y=value)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(x = "Aircraft.BombLoad.CrewExperience", y = "Damaged Locations")
+
+```
+
+\begin{flushright}
+  $\blacksquare$
+\end{flushright}
+
+\pagebreak
